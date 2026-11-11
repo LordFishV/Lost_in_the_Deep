@@ -4,6 +4,7 @@ public class Player : MonoBehaviour
 {
     [SerializeField] private PlayerCharacter _playerCharacter;
     [SerializeField] private PlayerCamera _playerCamera;
+    [SerializeField] private Health _playerHealth;
     [SerializeField] private bool _inDiveGear = true;
 
     private PlayerInputAction _inputActions;
@@ -18,6 +19,8 @@ public class Player : MonoBehaviour
 
         _playerCharacter.Initilise();
         _playerCamera.Initilise(_playerCharacter.CameraAnchor);
+
+        _playerHealth.Initilise();
     }
 
     private void OnDestroy()
@@ -45,7 +48,7 @@ public class Player : MonoBehaviour
         if (playerInput.Click)
             hasMouse = _playerCharacter.TryGetMouseWorldPosition(playerInput, _mainCamera, out mouseWorld);
 
-        _playerCharacter.UpdateVelocity(_mainCamera.transform, hasMouse, mouseWorld, _inDiveGear);
+        _playerCharacter.UpdateVelocity(hasMouse, mouseWorld, _inDiveGear);
         _playerCharacter.UpdateBody();
 
         // Inventory

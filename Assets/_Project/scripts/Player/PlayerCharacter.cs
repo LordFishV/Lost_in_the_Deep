@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.AI;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 
 [RequireComponent(typeof(CharacterController))]
 public class PlayerCharacter : MonoBehaviour
@@ -18,8 +19,11 @@ public class PlayerCharacter : MonoBehaviour
     [Header("Ground")]
     [SerializeField] private LayerMask _groundMask = ~0;
     [SerializeField] private float _groundCheckDistance = 0.3f;
-    [SerializeField] private float _gravity = -25f;
     [SerializeField] private float _groundedStickForce = -2f;
+
+    [Header("Physics")]
+    [SerializeField] private float _gravity = -25f;
+    [SerializeField] private float _slideSpeed = 8f;
 
     [Header("Pathfinding")]
     [Tooltip("How far from a click or from the player we search for the nearest NavMesh point")]
@@ -42,6 +46,7 @@ public class PlayerCharacter : MonoBehaviour
     private float _stuckTimer;
     private bool _isMoving;
     private bool _isInGear;
+    private bool _isSliding;
 
     // Ground state
     private Vector3 _groundNormal = Vector3.up;
@@ -54,6 +59,7 @@ public class PlayerCharacter : MonoBehaviour
     private int _cornerIndex;
 
     // Requested by input
+    private Vector2 _requestedDirection;
     private bool _requestedClick;
     private bool _requestedInteract;
 
@@ -92,10 +98,16 @@ public class PlayerCharacter : MonoBehaviour
 
     // ------------------------------------------------------------- Movement
 
-    public void UpdateVelocity(Transform cameraTransform, bool hasMouseWorld, Vector3 mouseWorldPosition, bool inDiveGear)
+    public void UpdateVelocity(bool hasMouseWorld, Vector3 mouseWorldPosition, bool inDiveGear)
     {
         _isInGear = inDiveGear;
         UpdateGround();
+
+        // Finds slope angle of the current ground the player is standing on
+        float slopeAngle = Vector3.Angle(Vector3.up, _groundNormal);
+        _isSliding = _isGrounded
+        && slopeAngle > _characterController.slopeLimit
+        && slopeAngle < 80f;
 
         // A click replaces whatever we were doing, if it lands somewhere we can path to
         if (_requestedClick && hasMouseWorld && !IsPointerOverUI() && TrySetPath(mouseWorldPosition))
@@ -104,26 +116,28 @@ public class PlayerCharacter : MonoBehaviour
             _stuckTimer = 0f;
         }
 
+        // Cancel click path while siliding
+        if (_isSliding && _moveSource == MoveSource.Click)
+            _moveSource = MoveSource.None;
+
         // Flat (XZ) direction for the active source
         Vector3 direction = Vector3.zero;
         float inputStrength = 1f;
         float distanceToTarget = float.MaxValue;
         bool clampToTarget = false;
 
+        // What is the desired move source (Keyboard [WASD] or Click [Left Mouse Button])
         switch (_moveSource)
         {
             case MoveSource.Keyboard:
-                if (_keyboardInput.sqrMagnitude > 0f)
+                if (_keyboardInput.sqrMagnitude <= 0f)
                 {
-                    // Make WASD relative to the camera's yaw
-                    float yaw = cameraTransform != null ? cameraTransform.eulerAngles.y : 0f;
-                    Vector3 worldInput = Quaternion.Euler(0f, yaw, 0f) * _keyboardInput;
-                    inputStrength = worldInput.magnitude;
-                    direction = worldInput / inputStrength;
+                    _moveSource = MoveSource.None;   // keys released
                 }
-                else
+                else if (!_isSliding)
                 {
-                    _moveSource = MoveSource.None;
+                    inputStrength = _keyboardInput.magnitude;
+                    direction = _keyboardInput / inputStrength;
                 }
                 break;
 
@@ -149,9 +163,11 @@ public class PlayerCharacter : MonoBehaviour
                 (false, _) => _walkSpeed
             };
 
-            // Project onto the ground plane so we follow the slope (walkable slopes only)
-            bool walkable = _isGrounded && Vector3.Angle(Vector3.up, _groundNormal) <= _characterController.slopeLimit;
-            slopeDirection = walkable
+            // Follow the surface whenever we're on it, including steep slopes.
+            // The upper bound only avoids degenerate projections on near-vertical surfaces.
+            bool onSurface = _isGrounded && Vector3.Angle(Vector3.up, _groundNormal) < 80f;
+
+            slopeDirection = onSurface
                 ? Vector3.ProjectOnPlane(direction, _groundNormal).normalized
                 : direction;
 
@@ -161,8 +177,8 @@ public class PlayerCharacter : MonoBehaviour
             // otherwise we'd slow down at every bend.
             if (clampToTarget)
             {
-                float horizontalRatio = new Vector2(slopeDirection.x, slopeDirection.z).magnitude;
-                step = Mathf.Min(step, distanceToTarget / Mathf.Max(horizontalRatio, 0.01f));
+                float surfaceFlatness = new Vector2(slopeDirection.x, slopeDirection.z).magnitude;
+                step = Mathf.Min(step, distanceToTarget / Mathf.Max(surfaceFlatness, 0.01f));
             }
         }
 
@@ -172,7 +188,14 @@ public class PlayerCharacter : MonoBehaviour
         else
             _verticalVelocity += _gravity * Time.deltaTime;
 
-        Vector3 motion = slopeDirection * step + Vector3.up * (_verticalVelocity * Time.deltaTime);
+        Vector3 slideMotion = Vector3.zero;
+        if (_isSliding)
+        {
+            Vector3 downSlope = Vector3.ProjectOnPlane(Vector3.down, _groundNormal).normalized;
+            slideMotion = downSlope * (_slideSpeed * Time.deltaTime);
+        }
+
+        Vector3 motion = slopeDirection * step + slideMotion + Vector3.up * (_verticalVelocity * Time.deltaTime);
         _characterController.Move(motion);
         _velocity = _characterController.velocity;
 
@@ -189,22 +212,20 @@ public class PlayerCharacter : MonoBehaviour
 
     public void UpdateBody()
     {
-        if (!_isMoving) return;
-
         Vector3 flatVelocity = new Vector3(_velocity.x, 0f, _velocity.z);
         if (flatVelocity.sqrMagnitude < 0.0001f) return; // Blocked by an object
 
-        float targetAngle = Mathf.Atan2(flatVelocity.x, flatVelocity.z) * Mathf.Rad2Deg;
-        float smoothAngle = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetAngle, ref _turnSmoothVelocity, _turnSmoothTime);
-        transform.rotation = Quaternion.Euler(0f, smoothAngle, 0f);
+        float targetYRotation = Mathf.Atan2(flatVelocity.x, flatVelocity.z) * Mathf.Rad2Deg;
+        float smoothYRotation = Mathf.SmoothDampAngle(transform.eulerAngles.y, targetYRotation, ref _turnSmoothVelocity, _turnSmoothTime);
+        transform.rotation = Quaternion.Euler(0f, smoothYRotation, 0f);
     }
 
     // ------------------------------------------------------------- Pathing
 
-    private bool TrySetPath(Vector3 worldTarget)
+    private bool TrySetPath(Vector3 worldPositionTarget)
     {
         // Snap both ends onto the NavMesh, since clicks can land on props or slightly off the mesh
-        if (!NavMesh.SamplePosition(worldTarget, out NavMeshHit targetHit, _navSampleDistance, NavMesh.AllAreas))
+        if (!NavMesh.SamplePosition(worldPositionTarget, out NavMeshHit targetHit, _navSampleDistance, NavMesh.AllAreas))
             return false;
         if (!NavMesh.SamplePosition(transform.position, out NavMeshHit startHit, _navSampleDistance, NavMesh.AllAreas))
             return false;
@@ -254,10 +275,11 @@ public class PlayerCharacter : MonoBehaviour
     private void UpdateGround()
     {
         float radius = _characterController.radius * 0.9f;
+        float skinWidth = _characterController.skinWidth + 0.05f;
 
         // Start the cast inside the capsule's lower sphere so it still hits when we're on the ground
-        Vector3 origin = transform.position + Vector3.up * (radius + _characterController.skinWidth + 0.05f);
-        float castDistance = _characterController.skinWidth + 0.05f + _groundCheckDistance;
+        Vector3 origin = transform.position + Vector3.up * (radius + skinWidth);
+        float castDistance = skinWidth + _groundCheckDistance;
 
         if (Physics.SphereCast(origin, radius, Vector3.down, out RaycastHit hit, castDistance, _groundMask,
                 QueryTriggerInteraction.Ignore))

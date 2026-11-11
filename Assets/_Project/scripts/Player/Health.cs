@@ -5,9 +5,14 @@ public class Health : MonoBehaviour, IHealth
     [Header("Health")]
     [SerializeField] private int _maxHealth = 3;
   
-    private int _health = _maxHealth;
+    private int _health;
 
     public int CurrentHealth => _health;
+
+    public void Initilise()
+    {
+        _health = _maxHealth;
+    }
 
     public void ApplyDamage(int damageAmount)
     {
