@@ -1,26 +1,34 @@
 using UnityEngine;
 
+// Enumerators
 public enum Stance
 { Idle, Walk, Run, Crouch }
 
 public enum MoveSource
-{ None, Keyboard, Click}
+{ None, Keyboard, Click }
 
-public interface IHealable
-{
-    void ApplyHeal(float healAmount, GameObject affectingObject);
-}
+public enum Action
+{ None, Repair, PickUp }
 
-public interface IDamageable
+
+
+// Interfaces
+public interface IHealth
 {
-    void ApplyDamage(float damageAmount, GameObject affectingObject);
+    void ApplyHeal(int healAmount);
+    void ApplyDamage(int damageAmount);
 }
 
 public interface IInteractable
 {
     void Interact(GameObject interactingObject);
+    void HoverOverEnter(GameObject interactingObject);
+    void HoverOverExit(GameObject interactingObject);
 }
 
+
+
+// Structs
 public struct PlayerInput
 {
     public Vector2 Move;
